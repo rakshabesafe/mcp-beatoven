@@ -1,0 +1,29 @@
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE and editor specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Virtual environment
+venv/
+.venv/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Test artifacts
+.pytest_cache/
+coverage.xml
+htmlcov/
+.coverage

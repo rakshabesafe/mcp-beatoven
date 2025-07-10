@@ -1,0 +1,10 @@
+pytest>=7.0.0
+pytest-asyncio>=0.20.0
+httpx>=0.23.0 # Required by FastAPI TestClient
+
+# Add other testing utilities if needed, e.g.:
+# coverage
+# pytest-cov
+# mock
+# flake8 # for linting
+# mypy # for type checking
