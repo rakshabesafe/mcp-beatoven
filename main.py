@@ -1,61 +1,72 @@
 import logging
-from fastapi import FastAPI, HTTPException, Depends
-from models import CompositionRequest, CompositionResponse, TaskStatus
+import asyncio
+from fastmcp import FastMCP, Context
+from fastapi import HTTPException
+from sse_starlette.sse import EventSourceResponse
+from models import CompositionRequest, CompositionResponse, TaskStatus, Prompt
 from api_client import BeatovenAPIClient
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(
-    title="Beatoven MCP Server",
-    description="A server implementing the Model Context Protocol for Beatoven.ai API.",
-    version="0.1.0",
+mcp = FastMCP(
+    "Beatoven MCP Server"
 )
 
-def get_api_client():
+@mcp.tool(name="compose_track")
+async def compose_track_tool(
+    prompt_text: str,
+    format: str = "wav",
+    looping: bool = False,
+) -> CompositionResponse:
+    api_client = BeatovenAPIClient()
+    logger.info(f"Received composition request: prompt='{prompt_text}', format='{format}', looping={looping}")
+    request_data = CompositionRequest(
+        prompt=Prompt(text=prompt_text),
+        format=format,
+        looping=looping
+    )
     try:
-        return BeatovenAPIClient()
-    except ValueError as e:
-        # This will be caught by FastAPI's exception handling for dependency errors
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/compose", response_model=CompositionResponse)
-async def compose(
-    request: CompositionRequest, client: BeatovenAPIClient = Depends(get_api_client)
-):
-    """
-    Accepts a composition request and forwards it to the Beatoven API.
-    """
-    logger.info(f"Received composition request: {request.model_dump_json()}")
-    try:
-        response = await client.compose_track(request)
+        response = await api_client.compose_track(request_data)
         logger.info(f"Beatoven API compose response: {response.model_dump_json()}")
         return response
     except Exception as e:
         logger.error(f"Error during composition: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+async def stream_task_updates(current_task_id: str, client: BeatovenAPIClient): # Renamed arg
+    logger.info(f"stream_task_updates called with current_task_id: {current_task_id} (type: {type(current_task_id)})")
+    POLL_INTERVAL = 5
+    MAX_ATTEMPTS = 360
 
-@app.get("/tasks/{task_id}", response_model=TaskStatus)
-async def get_task(
-    task_id: str, client: BeatovenAPIClient = Depends(get_api_client)
-):
-    """
-    Retrieves the status of a composition task from the Beatoven API.
-    """
-    logger.info(f"Received task status request for task_id: {task_id}")
-    try:
-        status = await client.get_task_status(task_id)
-        logger.info(f"Beatoven API task status response: {status.model_dump_json()}")
-        return status
-    except Exception as e:
-        logger.error(f"Error retrieving task status for {task_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            logger.info(f"stream_task_updates: client is {id(client)}, client.get_task_status is {id(client.get_task_status)}")
+            status_data = await client.get_task_status(current_task_id) # Use renamed arg
+            logger.info(f"Polling task {current_task_id}, status: {status_data.status}")
+            yield {"event": "update", "data": status_data.model_dump_json()}
+            if status_data.status in ["composed", "failed"]:
+                logger.info(f"Task {current_task_id} reached terminal state: {status_data.status}")
+                yield {"event": "complete", "data": status_data.model_dump_json()}
+                break
+            await asyncio.sleep(POLL_INTERVAL)
+        except Exception as e:
+            logger.error(f"Error polling task {current_task_id} (type: {type(current_task_id)}): {e}")
+            yield {"event": "error", "data": {"error": str(e), "task_id": str(current_task_id)}} # Ensure task_id is stringified
+            break
+    else:
+        logger.warning(f"Max polling attempts reached for task {current_task_id} (type: {type(current_task_id)}).")
+        yield {"event": "error", "data": {"error": "Polling timeout", "task_id": str(current_task_id)}} # Ensure task_id is stringified
+
+@mcp.custom_route("/tasks/{path_param_task_id}/subscribe", methods=["GET"]) # Renamed path parameter
+async def subscribe_to_task_updates_route(path_param_task_id: str): # Renamed function argument
+    logger.info(f"subscribe_to_task_updates_route called with path_param_task_id: {path_param_task_id} (type: {type(path_param_task_id)})")
+    api_client = BeatovenAPIClient()
+    return EventSourceResponse(stream_task_updates(path_param_task_id, api_client)) # Pass renamed arg
+
+asgi_app = mcp.http_app()
 
 if __name__ == "__main__":
     import uvicorn
-    # This is for local development and debugging.
-    # In a production environment, you'd use a proper ASGI server like Uvicorn or Hypercorn managed by a process manager.
-    logger.info("Starting Uvicorn server for local development.")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logger.info("Starting Uvicorn server for Beatoven MCP.")
+    uvicorn.run(asgi_app, host="0.0.0.0", port=8000)

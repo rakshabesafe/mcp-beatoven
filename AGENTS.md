@@ -1,80 +1,75 @@
-# Agent Instructions for Beatoven MCP Server
+# Agent Instructions for Beatoven MCP Server (FastMCP)
 
-Welcome, agent! This document provides guidelines for working on the Beatoven MCP Server codebase.
+Welcome, agent! This document provides guidelines for working on the Beatoven MCP Server codebase, which uses **FastMCP**.
 
 ## Project Overview
 
-This project is a FastAPI server that acts as a client to the Beatoven.ai API. It exposes two main endpoints:
-1.  `/compose`: To submit a music composition request.
-2.  `/tasks/{task_id}`: To check the status of a composition task.
+This project is a **FastMCP** server that acts as a client to the Beatoven.ai API. It exposes:
+1.  An MCP Tool (`compose_track`): To submit a music composition request.
+2.  A custom HTTP SSE endpoint (`/tasks/{task_id}/subscribe`): To provide real-time status updates for composition tasks.
 
 Key files:
--   `main.py`: Contains the FastAPI application logic and endpoint definitions.
+-   `main.py`: Contains the FastMCP application logic, MCP tool definitions, and the custom SSE endpoint. The FastMCP instance is `mcp`, and the runnable ASGI app is `asgi_app = mcp.http_app()`.
 -   `api_client.py`: Implements the `BeatovenAPIClient` class responsible for making asynchronous HTTP requests to the actual Beatoven.ai API.
--   `models.py`: Defines Pydantic models for request/response validation and data structuring.
--   `tests/`: Contains unit tests for the API client and FastAPI endpoints.
-    -   `tests/test_api_client.py`
-    -   `tests/test_main.py`
-    -   `tests/conftest.py`: Configures pytest, notably by adding the project root to `sys.path` so that modules like `api_client` can be imported correctly in tests.
+-   `models.py`: Defines Pydantic models for data validation and structuring, used by both the MCP tool and the SSE data.
+-   `tests/`: Contains unit tests.
+    -   `tests/test_api_client.py`: Tests for `BeatovenAPIClient`.
+    -   `tests/test_main.py`: Tests for the FastMCP application. It uses `fastmcp.client.Client` for testing MCP tools and FastAPI's `TestClient` for the custom SSE HTTP route.
+    -   `tests/conftest.py`: Configures pytest, notably by adding the project root to `sys.path`.
 
 ## Development Guidelines
 
 1.  **Environment Setup**:
     *   Ensure you have Python 3.8+ installed.
     *   Use a virtual environment.
-    *   Install dependencies using `pip install -r requirements.txt`.
+    *   Install dependencies: `pip install -r requirements.txt` (includes `fastmcp`).
     *   For running tests, install test dependencies: `pip install -r requirements-test.txt`.
-    *   An API key for Beatoven.ai is required. It should be set in a `.env` file in the project root as `BEATOVEN_API_KEY="YOUR_KEY"`. The `api_client.py` uses `python-dotenv` to load this.
+    *   An API key for Beatoven.ai is required. Set it in a `.env` file in the project root as `BEATOVEN_API_KEY="YOUR_KEY"`.
 
 2.  **Code Style & Conventions**:
-    *   Follow PEP 8 for Python code.
-    *   Use type hints for all function signatures and important variables. Pydantic models inherently use them.
-    *   Keep functions and methods reasonably short and focused on a single responsibility.
-    *   Logging: Basic logging is set up in `main.py` and `api_client.py`. Use `logger.info()`, `logger.error()`, etc., for relevant messages.
+    *   Follow PEP 8.
+    *   Use type hints.
+    *   Keep functions focused.
+    *   Logging: Use the `logger` instances configured in `main.py` and `api_client.py`.
 
-3.  **API Client (`api_client.py`)**:
-    *   All interactions with the external Beatoven.ai API should go through `BeatovenAPIClient`.
-    *   Use `aiohttp` for asynchronous HTTP requests.
-    *   Implement robust error handling for API requests (e.g., connection errors, HTTP status errors). Raise appropriate exceptions.
+3.  **FastMCP Server (`main.py`)**:
+    *   The core application is a `FastMCP` instance.
+    *   **MCP Tools**: Defined using `@mcp.tool`. These are the primary way to expose functionality to MCP clients. Tool functions should typically take simple arguments that FastMCP can map from requests. They return Pydantic models or basic Python types. Error handling within tools should ideally use FastMCP's mechanisms if available (e.g., `ctx.error()`) or raise exceptions that FastMCP can convert to appropriate MCP errors (like `fastmcp.exceptions.ToolError`). Currently, it raises `HTTPException` which FastMCP may convert.
+    *   **Custom HTTP Routes**: For non-MCP HTTP functionality (like our SSE endpoint), use `@mcp.custom_route`. These are essentially Starlette/FastAPI routes.
+    *   **SSE Implementation**: The `/tasks/{task_id}/subscribe` endpoint uses `sse_starlette.EventSourceResponse` with an async generator (`stream_task_updates`) to send events. Events are dictionaries with `event` and `data` keys.
+    *   **Dependencies**: `BeatovenAPIClient` is currently instantiated directly in handlers. For more complex scenarios, explore FastMCP's dependency injection or context features if available and suitable.
 
-4.  **FastAPI Endpoints (`main.py`)**:
-    *   Endpoints should primarily delegate business logic to other components (like `BeatovenAPIClient`).
-    *   Use Pydantic models defined in `models.py` for request body validation and response serialization.
-    *   Use FastAPI's `Depends` for dependency injection (e.g., for the `BeatovenAPIClient`).
-    *   Return appropriate HTTP status codes and error responses. `HTTPException` is useful here.
+4.  **API Client (`api_client.py`)**:
+    *   Remains largely the same: an `aiohttp`-based client for the external Beatoven API.
 
 5.  **Models (`models.py`)**:
-    *   All data structures exchanged with the external API or through the server's own API should have corresponding Pydantic models.
-    *   Use `Optional` and default values appropriately.
-    *   Add validation where necessary (e.g., using `Field` for patterns or constraints).
+    *   Pydantic models are used for tool return types and for the data payload of SSE events.
 
 6.  **Testing (`tests/`)**:
-    *   Write unit tests for all new functionality.
-    *   Use `pytest` as the test runner.
-    *   Use `unittest.mock` (especially `AsyncMock` for async methods and `patch`) to mock external dependencies like the Beatoven.ai API calls. This ensures tests are fast and reliable.
-    *   The `TestClient` from FastAPI is used for testing API endpoints in `tests/test_main.py`.
-    *   Ensure tests cover both success cases and error conditions.
-    *   To run tests: `pytest tests/` from the project root.
-    *   The `tests/conftest.py` file is crucial for making sure imports work correctly within the tests by adding the project root to `sys.path`. Do not remove this unless a better project structure (e.g., installable package) is implemented.
+    *   **MCP Tools**: Test using `fastmcp.client.Client` connected in-memory to the server instance, as shown in `tests/test_main.py`. This client's `call_tool` method is used.
+    *   **Custom HTTP Routes (SSE)**: Test using `fastapi.testclient.TestClient` initialized with the `asgi_app` from `main.py`. Testing SSE streams requires careful handling of the streaming response.
+    *   **Mocking**: Use `unittest.mock` (`AsyncMock`, `patch`) for external services like `BeatovenAPIClient`. Ensure patches target the correct instantiation points in `main.py`.
+    *   **Current Test Issues (Important!)**: As of the last update, the SSE tests in `tests/test_main.py` (`test_subscribe_to_task_updates_sse` and `test_subscribe_to_task_updates_sse_api_error`) are **failing**.
+        *   One issue involves the `BeatovenAPIClient.get_task_status` mock recording calls with a Starlette `Request` object instead of the expected string `task_id`, despite application logs showing the string `task_id` is correctly passed within the application code. This makes mock assertions difficult.
+        *   Another issue is a `RuntimeError` related to asyncio event loops when `TestClient` interacts with the `sse-starlette` endpoint, particularly in error scenarios.
+        *   These issues indicate complex interactions between the testing tools and the async/ASGI libraries. If tasked with fixing these, proceed with caution and detailed debugging. Consider alternative ways to assert SSE behavior if direct mock verification remains problematic.
 
 7.  **Dependencies**:
-    *   Add new runtime dependencies to `requirements.txt`.
-    *   Add new test-specific dependencies to `requirements-test.txt`.
-    *   Keep dependencies up-to-date if necessary, but ensure compatibility.
+    *   Runtime: `requirements.txt` (ensure `fastmcp` is there).
+    *   Test: `requirements-test.txt`.
 
 8.  **Documentation**:
-    *   Update `README.md` if you change server setup, add new endpoints, or make significant architectural changes.
-    *   Add comments to your code where the logic is complex or non-obvious. Docstrings for public functions/methods are good.
+    *   Update `README.md` for user-facing changes.
+    *   Update this `AGENTS.md` for agent-specific guidelines.
 
-9.  **Committing and Submitting Changes**:
-    *   Follow standard commit message conventions (e.g., a short subject line, followed by a more detailed body if needed).
-    *   Ensure all tests pass before submitting your changes.
-    *   If you are asked to make changes that deviate significantly from the original plan, please confirm this with the user.
+## Common Pitfalls & Troubleshooting (FastMCP specific)
 
-## Common Pitfalls & Troubleshooting
+*   **MCP Tool vs. Custom Route**: Understand when to use `@mcp.tool` (for MCP-compliant functionality) versus `@mcp.custom_route` (for standard HTTP endpoints like SSE feeds or web pages not directly part of the MCP interaction model).
+*   **Tool Signatures**: FastMCP tools often map request parameters to function arguments directly. Avoid complex objects as direct tool arguments unless you know FastMCP handles their deserialization from the specific transport.
+*   **Streaming with FastMCP**:
+    *   `ctx.report_progress()`: This is the primary MCP mechanism for tools to send progress updates during long-running operations. The client needs to support progress tokens.
+    *   Custom SSE: For dedicated, non-MCP event streams (like our task status), using `@mcp.custom_route` with `EventSourceResponse` is a viable approach.
+*   **Testing FastMCP**: Use `fastmcp.client.Client` for in-memory testing of MCP components. For custom HTTP routes on the `mcp.http_app()`, use a standard ASGI test client like `fastapi.testclient.TestClient`.
+*   **Test Failures (see above)**: Be aware of the ongoing issues with SSE tests. Do not assume they will pass without further fixes.
 
-*   **`ModuleNotFoundError` during tests**: This is often due to Python's import system not finding the project's root modules. `tests/conftest.py` attempts to solve this. If you encounter it, ensure `pytest` is run from the project root.
-*   **API Key Issues**: If tests related to API key handling fail, or if the application can't connect to Beatoven.ai, double-check that the `BEATOVEN_API_KEY` is correctly set in your `.env` file and that `python-dotenv` is working as expected.
-*   **Async/Await Issues**: Remember to `await` asynchronous function calls. Use `AsyncMock` for mocking async methods in tests.
-
-By following these guidelines, you'll help maintain the quality and consistency of the codebase. If anything is unclear, please ask for clarification.Tool output for `create_file_with_block`:
+By following these guidelines, you'll help maintain the quality and consistency of the codebase. If anything is unclear, please ask for clarification.
